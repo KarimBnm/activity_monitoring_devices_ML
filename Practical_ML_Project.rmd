@@ -1,0 +1,168 @@
+---
+title: "Practical ML Project"
+author: "Karim.bnm"
+date: "6 mai 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+## Set up and data retrieval
+
+```{r}
+
+library(caret)
+library(Hmisc)
+library(corrplot)
+library(caTools)
+library(nnet)
+library(kernlab)
+library(knitr)
+
+trainurl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testurl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+download.file(trainurl, "pml-training.csv")
+download.file(testurl, "pml-testing.csv")
+
+training <- read.csv(file = "pml-training.csv", header=TRUE, sep=",", na.strings=c("NA","#DIV/0!",""))
+testing <- read.csv(file = "pml-testing.csv", header=TRUE, sep=",", na.strings=c("NA","#DIV/0!",""))
+
+#testing for name consistency between the training and testing sets.
+
+all.equal(colnames(testing)[1:length(colnames(testing))-1], colnames(training)[1:length(colnames(training))-1])
+
+#eliminating variables with very low variance
+
+nearzero <- nearZeroVar(training, saveMetrics = TRUE)
+training <- training[, !nearzero$nzv]
+
+#eliminating variables with high rate of NAs
+
+highNAs <- sapply(colnames(training), 
+            function(x) 
+                if(sum(is.na(training[, x])) > 0.6*nrow(training))    
+                    {
+                    return(TRUE)
+                    }
+                    else
+                    {
+                    return(FALSE)
+                    }
+                 )
+
+training <- training[, !highNAs]
+
+#eliminating variables with low information value
+
+training <- training[, -(1:6)]
+
+#checking for dimension reduction (correlation between variables)
+
+Hcorr <- findCorrelation(abs(cor(training[, -53])), cutoff=0.8)
+names(training)[Hcorr]
+
+# Visualization of the correlation matrix
+corrplot(cor(training[,-53]), method = "circle", tl.cex=0.6)
+
+# Remaining variables after cleaning
+
+names(training)
+
+# creation of a validation set
+
+set.seed(1234) 
+train <- createDataPartition(training$classe, p = 0.7, list = FALSE)
+train_set <- training[train,]
+valid_set <- training[-train,]
+
+```
+
+The data cleaning process shows that several variables have high correlations (>0.8). We use principal component analysis to reduce the variable space dimension.
+
+## Model selection
+
+```{r cache=TRUE, results="hide"}
+
+# Train control using pca (for dimension reduction) and 10 fold cross validation
+
+tc <- trainControl(method = "cv", number = 10, verboseIter=FALSE , preProcOptions="pca", allowParallel=TRUE)
+
+# fitting with logistic regression
+
+lr <- train(classe~., data = train_set, trControl = tc, method = "LogitBoost")
+
+#fitting with random forest
+
+rf <- train(classe~., data=train_set, trControl=tc, method="rf")
+
+# fitting with support vector machine (linear)
+
+svm1 <- train(classe~., data=train_set, trControl = tc, method = "svmLinear")
+
+# fitting with support vector machine (radial)
+
+svm2 <- train(classe~., data=train_set, trControl = tc, method = "svmRadial")
+
+# fitting with neural nets
+
+nn <- train(classe~., data=train_set, trControl=tc, method="nnet", verbose=F)
+
+# Compared results
+
+Accuracy <- c(max(lr$results$Accuracy), max(rf$results$Accuracy), max(svm1$results$Accuracy), max(svm2$results$Accuracy), max(nn$results$Accuracy))
+
+Kappa <- c(max(lr$results$Kappa), max(rf$results$Kappa), max(svm1$results$Kappa), max(svm2$results$Kappa), max(nn$results$Kappa))
+
+model <- c("Logit", "Random Forest", "Linear SVM", "Radial SVM", "1 Layer Neural Net")
+
+comparison <- cbind(model, Accuracy, Kappa)
+
+kable(comparison)
+
+```
+
+The random forest algorithm shows the best result, followed by the Support Vector Machine using a radial kernel.
+
+## Predictions on validation set and test set
+
+```{r}
+
+
+# predictions on the validation set using the RF model
+
+predrf <- predict(rf, valid_set)
+
+# Confusion matrix
+
+conf_matrix <- confusionMatrix(valid_set$classe, predrf)
+
+conf_matrix$overall
+
+# plot the random forest model
+
+plot(rf, lwd = 2, main = "Random forest accuracy", xlab = "Predictors", ylab = "Accuracy")
+
+# final results
+
+predrf_testing <- predict(rf, testing)
+
+predrf_testing
+
+# true accuracy of the predicted model
+valid_set_accuracy <- sum(predrf == valid_set$classe)/length(valid_set$classe)
+
+# out of sample error and percentage of out of sample error
+outOfSampleError <- 1 - valid_set_accuracy
+outOfSampleError*100
+
+```
+
+The Random Forest algorithm gives the best accuracy for predicting the classe variable of the dataset.
+The out of sample error estimated is 0.56% (the in sample error rate was 0.63%)
